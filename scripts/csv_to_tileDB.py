@@ -23,6 +23,7 @@ import pandas as pd
 import tiledb
 import matplotlib.pyplot as plt
 import argparse
+import re
 
 from azure_config import azconfig
 from fsspec.registry import known_implementations
@@ -69,6 +70,13 @@ def open_dataframe(filepath, filename, local_or_azure):
                          storage_options=azconfig)
     else:
         df = pd.read_csv(os.path.join(filepath, filename))
+    # if 'Year' isn't in the df, but is in filename, add it
+    if not "Year" in df.columns:
+        year_match = re.search("_([\d]{4}).csv", filename)
+        if not year_match:
+            raise RuntimeError("Unable to extract year from filename")
+        year = int(year_match.groups()[0])
+        df["Year"] = year
     return df
 
 
@@ -86,7 +94,7 @@ def get_azure_ctx():
     return ctx
 
 
-def write_schema(output_url):
+def write_schema(output_url, schema_type="SummaryGrid"):
     """
     Call once, will create file/directory structure ready for data
     to be written to it.
@@ -96,23 +104,61 @@ def write_schema(output_url):
         ctx = get_azure_ctx()
     else:
         ctx = None
-    schema = tiledb.ArraySchema(
-        domain = tiledb.Domain(*[
+    if schema_type == "SummaryGrid" or schema_type == "Samples":
+        dom = tiledb.Domain(*[
             tiledb.Dim(name='Year', domain=(2010,2017),
                        tile=None, dtype='uint64'),
             tiledb.Dim(name='Longitude', domain=(-180., 180),
                        tile=None, dtype='float64'),
             tiledb.Dim(name='Latitude', domain=(-70., 70),
                        tile=None, dtype='float64'),
-        ]),
-        attrs=[
+        ])
+    elif schema_type == "SummaryCountry":
+        dom = tiledb.Domain(*[
+            tiledb.Dim(name="CountryCode", domain=(1,233),
+                       tile=None, dtype='uint64'),
+            tiledb.Dim(name='Year', domain=(2010,2017),
+                       tile=None, dtype='uint64'),
+            tiledb.Dim(name="Type", domain=(None,None),
+                       tile=None, dtype=np.bytes_)
+            ])
+    else:
+        raise RuntimeError("Unknown schema type {}".format(schema_type))
+
+    if schema_type == "SummaryGrid":
+        attributes = [
             tiledb.Attr(name='CountryCode', dtype='int64'),
             tiledb.Attr(name='Mean', dtype='float64'),
             tiledb.Attr(name='Median', dtype='float64'),
             tiledb.Attr(name='StdDev', dtype='float64'),
             tiledb.Attr(name='Upper95', dtype='float64'),
             tiledb.Attr(name='Lower95', dtype='float64'),
-        ],
+        ]
+    elif schema_type == "SummaryCountry":
+        attributes = [
+            tiledb.Attr(name='Mean', dtype='float64'),
+            tiledb.Attr(name='LowerCI', dtype='float64'),
+            tiledb.Attr(name='UpperCI', dtype='float64'),
+            tiledb.Attr(name='Median', dtype='float64'),
+            tiledb.Attr(name='LowerPI', dtype='float64'),
+            tiledb.Attr(name='UpperPI', dtype='float64'),
+        ]
+    elif schema_type == "Samples":
+        attributes = [
+            tiledb.Attr(name='POP', dtype='float64'),
+            tiledb.Attr(name='CountryCode', dtype='int64'),
+        ]
+        for i in range(1,101):
+            attributes.append(
+                tiledb.Attr(name=f'pred_{i}', dtype='float64')
+            )
+    else:
+        raise RuntimeError("Unknown schema_type {}".format(schema_type))
+
+
+    schema = tiledb.ArraySchema(
+        domain = dom,
+        attrs = attributes,
         cell_order='col-major',
         tile_order='col-major',
         sparse=True
@@ -120,7 +166,7 @@ def write_schema(output_url):
     tiledb.SparseArray.create(output_url, schema, ctx=ctx)
 
 
-def write_data(df, output_url):
+def write_data(df, output_url, schema_type="SummaryGrid"):
     """
     Call for each year's dataframe - write data to the Array
     """
@@ -130,12 +176,18 @@ def write_data(df, output_url):
         ctx = None
     with tiledb.open(output_url, 'w', ctx=ctx) as A:
         df_dict = {k: v.values for k,v in df.items()}
-        lat = df_dict.pop('Latitude')
-        lon = df_dict.pop('Longitude')
         year = df_dict.pop('Year')
         _ = df_dict.pop('Unnamed: 0')
-        A[year, lon, lat] = df_dict
-
+        if schema_type in ["SummaryGrid", "Samples"]:
+            lat = df_dict.pop('Latitude')
+            lon = df_dict.pop('Longitude')
+            A[year, lon, lat] = df_dict
+        elif schema_type == "SummaryCountry":
+            cc = df_dict.pop('CountryCode')
+            weighted = df_dict.pop("Type")
+            A[cc, year, weighted] = df_dict
+        else:
+            raise RuntimeError("Unknown schema type {}".format(schema_type))
 
 def test_plot(tiledb_url, year):
     """
@@ -161,6 +213,7 @@ if __name__ == "__main__":
     parser.add_argument("--input_location", help="local or Azure", default="local")
     parser.add_argument("--output_path", help="path TileDB dataset, including container, if on Azure", required=True)
     parser.add_argument("--output_location", help="local or Azure", default="local")
+    parser.add_argument("--schema_type", help="What type of CSV", choices=["SummaryGrid", "SummaryCountry", "Samples"], default="SummaryGrid")
     args = parser.parse_args()
 
     if args.output_location.lower() not in ["azure", "local"] or \
@@ -172,10 +225,10 @@ if __name__ == "__main__":
         output_url = "azure://{}".format(args.output_path)
     else:
         output_url = args.output_path
-    write_schema(output_url)
+    write_schema(output_url, args.schema_type)
     for year in range(2010,2017):
         print("Doing year {}".format(year))
         filename = "{}_{}.csv".format(args.input_filebase, year)
         df = open_dataframe(args.input_path, filename, args.input_location)
-        write_data(df, output_url)
+        write_data(df, output_url, args.schema_type)
     print("All done!")
