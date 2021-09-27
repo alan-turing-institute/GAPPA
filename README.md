@@ -27,3 +27,8 @@ python csv_to_tileDB.py --help
 ### Notebooks: example of reading TileDB from Azure
 
 The jupyter notebook `notebooks/Reading_from_tileDB.ipynb` shows a couple of examples of reading data from the TileDB datasets on Azure and making basic plots.
+
+### Example dashboard
+
+In the `dashboard/` directory there is an example using Plot.ly/Dash to show a dashboard of the mean PM2.5 estimates per country, including a slider to change the year, and a radio button to choose between population-weighted or unweighted values.  
+There is also a Dockerfile which can be used to containerize this application, and [instructions](dashboard/DeployWebAppOnAzure.md) on how to do this and then deploy as an Azure WebApp.
