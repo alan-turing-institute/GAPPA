@@ -8,7 +8,7 @@ Following instructions [here](https://docs.docker.com/docker-hub/)
 ### Build the docker image and push to Dockerhub
 
 ```
-docker build -it <DOCKER_ID>/gappadash:latest .
+docker build -t <DOCKER_ID>/gappadash:latest .
 docker push <DOCKER_ID>/gappadash:latest
 ```
 
